@@ -46,18 +46,6 @@ import java.util.Locale;
 
 import tv.danmaku.ijk.media.player.IMediaPlayer;
 
-/**
- * 北京联通 IPTV 主播放界面
- *
- * 核心能力：
- * 1. 基于 bilibili/ijkplayer 播放全部北京联通 IPTV 频道 (4K HDR/SDR、高清央视/卫视/北京、少儿、标清)
- * 2. 支持路由器 udpxy 单播代理、Android 内置本地 udpxy 网关、RTP 原生组播三种播放模式
- * 3. 实时探测并回填与 check_iptv_m3u.sh 一致的视频轨道、音频轨道及实测分辨率标签
- * 4. 完整适配【电视遥控器】与【手机/平板触屏】双交互模式：
- *    - 遥控器：上下键/频道键换台、0-9数字键选台(含频道名实时预览与OK立即确认)、左右键呼出频道列表并自动定位当前频道焦点、
- *      OK键呼出信息页面、列表内左右键直接切换分类、长按OK/红键收藏、绿键打开动态组播扫描、黄键切换画面比例、菜单/蓝键打开设置、双击返回退出
- *    - 触屏：单击显隐OSD/收起抽屉、双击切换画面比例、右滑呼出频道抽屉、左滑收起抽屉、全屏上下滑动快速换台
- */
 public class MainActivity extends AppCompatActivity {
 
     private static final long HUD_AUTO_HIDE_MS = 6000L;
@@ -156,10 +144,8 @@ public class MainActivity extends AppCompatActivity {
         setupPlayerListeners();
         refreshChannelList();
 
-        // 自动播放上次观看的频道 (默认 CCTV-1综合[1][高清])
         playInitialChannel();
 
-        // 启动时如果抽屉可见，自动将遥控器焦点定位到当前播放的频道项；否则聚焦播放页 HUD 按钮
         if (drawerPanel.getVisibility() == View.VISIBLE) {
             focusChannelListAt(channelAdapter.getPlayingChannelIndex());
         } else {
@@ -457,9 +443,6 @@ public class MainActivity extends AppCompatActivity {
         focusHudButtonAt(currentHudFocusIndex + delta);
     }
 
-    /**
-     * 配置触屏手势：单击显隐HUD/关闭抽屉、双击切换画面比例、左右滑动开关频道抽屉、上下滑动换台
-     */
     private void setupTouchGestures() {
         touchGestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
@@ -506,7 +489,6 @@ public class MainActivity extends AppCompatActivity {
                         && Math.abs(dy) > Math.abs(dx)
                         && Math.abs(dy) > 90
                         && Math.abs(velocityY) > 200) {
-                    // 全屏上下滑动切换频道
                     if (dy < 0) {
                         switchAdjacentChannel(1);
                     } else {
@@ -737,7 +719,6 @@ public class MainActivity extends AppCompatActivity {
         if (settings.getStreamMode() == IptvSettings.STREAM_MODE_UDPXY
                 && udpxyUnreachableInSession
                 && localProxyPort > 0) {
-            // 若当前会话已检测到外部 udpxy 不可达，切台时直接走本地网卡组播直连，避免每次切台等待 udpxy 超时
             fallbackToLocalProxyAttempted = true;
             resolvedUrl = StreamUrlResolver.toUdpxyUrl(channel.getRawUrl(), "127.0.0.1:" + localProxyPort);
         } else {
@@ -1062,10 +1043,6 @@ public class MainActivity extends AppCompatActivity {
         mainHandler.postDelayed(hideHudRunnable, HUD_AUTO_HIDE_MS);
     }
 
-    /**
-     * 针对无数字按键、无红绿黄蓝四色键的智能电视极简遥控器：
-     * 提供方向键可操控的虚拟数字选台键盘 (3x4 网格，默认聚焦数字 5 居中位)
-     */
     private void showVirtualNumpadDialog() {
         View view = LayoutInflater.from(this).inflate(R.layout.dialog_virtual_numpad, null);
         TextView tvDigits = view.findViewById(R.id.tv_numpad_digits);
@@ -1161,17 +1138,12 @@ public class MainActivity extends AppCompatActivity {
         });
 
         dialog.show();
-        // 默认将遥控器焦点放在正中央的数字 "5" 上，方便上下左右一步触达任意数字
         View centerBtn = view.findViewById(R.id.btn_numpad_5);
         if (centerBtn != null) {
             centerBtn.post(centerBtn::requestFocus);
         }
     }
 
-    /**
-     * 针对智能电视极简遥控器（无数字键、无四色键）的全功能快捷操作菜单：
-     * 全屏下长按【OK键】或按【菜单键】呼出，所有高频功能均可通过上下键 + OK 一键完成。
-     */
     private void showSmartRemoteQuickMenu() {
         String favText = (currentChannel != null && currentChannel.isFavorite())
                 ? "取消收藏当前频道 (" + currentChannel.getDisplayName() + ")"
@@ -1384,21 +1356,6 @@ public class MainActivity extends AppCompatActivity {
         settingsDialog.show();
     }
 
-    /**
-     * 全局遥控器按键分发拦截（优先于子控件焦点处理）：
-     * - 数字键 0~9 / 小键盘 0~9：输入台号选台，OSD 实时预览台名，按 OK 键立即跳转
-     * - 频道加减键 (CHANNEL_UP / CHANNEL_DOWN / PAGE_UP / PAGE_DOWN)：随时上下换台
-     * - 全屏状态下（抽屉关闭）：
-     *   - 上/下方向键：直接切换上/下一频道
-     *   - 左/右方向键：若信息页面(HUD)未显示则调出左侧频道列表并定位当前频道；若信息页面已显示则切换 HUD 按钮焦点
-     *   - OK / Enter 键：若信息页面(HUD)未显示则调出信息页面并聚焦功能按钮；若信息页面已显示则触发当前聚焦按钮
-     * - 机顶盒四色功能键与快捷键：
-     *   - 菜单键 / 蓝键 (PROG_BLUE)：打开播放与 udpxy 设置
-     *   - 绿键 (PROG_GREEN) / GUIDE：打开组播地址动态扫描器
-     *   - 黄键 (PROG_YELLOW)：切换画面比例
-     *   - 红键 (PROG_RED)：收藏/取消收藏频道
-     *   - INFO 键：显隐流媒体信息栏
-     */
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         if (hudOverlay.getVisibility() == View.VISIBLE || drawerPanel.getVisibility() == View.VISIBLE) {
@@ -1416,7 +1373,6 @@ public class MainActivity extends AppCompatActivity {
                 scheduleHideHud();
             }
 
-            // 1. 搜索输入框未处于焦点时，拦截 0-9 及小键盘数字键用于遥控器数字选台
             boolean searchFocused = etSearchChannel != null && etSearchChannel.hasFocus();
             if (!searchFocused) {
                 int digit = extractDigitFromKeyCode(keyCode);
@@ -1424,7 +1380,6 @@ public class MainActivity extends AppCompatActivity {
                     handleRemoteNumberDigit(digit);
                     return true;
                 }
-                // 当正在输入台号时，按 OK/Enter 立即确认切台，按返回/删除键取消输入
                 if (remoteNumberBuffer.length() > 0) {
                     if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                             || keyCode == KeyEvent.KEYCODE_ENTER
@@ -1441,7 +1396,6 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
-            // 2. 遥控器专用频道加减键 / 翻页键随时换台 (上=下一台/+1，下=上一台/-1)
             if (keyCode == KeyEvent.KEYCODE_CHANNEL_UP || keyCode == KeyEvent.KEYCODE_PAGE_UP) {
                 switchAdjacentChannel(1);
                 return true;
@@ -1451,7 +1405,6 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
 
-            // 3. 遥控器菜单键与四色快捷键（针对无四色键的智能遥控器，按菜单键打开全功能快捷菜单）
             if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_SETTINGS) {
                 showSmartRemoteQuickMenu();
                 return true;
@@ -1478,7 +1431,6 @@ public class MainActivity extends AppCompatActivity {
                 return true;
             }
 
-            // 4. 当左侧频道列表抽屉打开时的遥控器方向键循环切换逻辑
             if (drawerPanel.getVisibility() == View.VISIBLE) {
                 if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                     View focused = getCurrentFocus();
@@ -1499,17 +1451,11 @@ public class MainActivity extends AppCompatActivity {
                     return true;
                 }
             } else {
-                // 当左侧频道列表抽屉关闭时的全屏遥控器方向键与长按 OK 逻辑
                 if (keyCode == KeyEvent.KEYCODE_PROG_RED || keyCode == KeyEvent.KEYCODE_BOOKMARK) {
                     toggleCurrentChannelFavorite();
                     return true;
                 }
 
-                // 播放时方向键逻辑：
-                // - 左/右方向键：若信息页面(HUD)未显示则调出频道列表；若信息页面已显示则切换 HUD 按钮焦点
-                // - 上/下方向键：直接切换上/下一频道
-                // - 短按 OK：若信息页面(HUD)已显示则触发当前聚焦的按钮点击；若信息页面未显示则调出信息页面(HUD)
-                // - 长按 OK 键：弹出「智能遥控器快捷操作面板」
                 if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                     if (hudOverlay.getVisibility() != View.VISIBLE) {
                         openChannelDrawerAndFocus();
@@ -1545,7 +1491,6 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
-            // 5. 返回键分层处理：先关抽屉 -> 再关HUD操控栏 -> 双击退出应用
             if (keyCode == KeyEvent.KEYCODE_BACK) {
                 if (drawerPanel.getVisibility() == View.VISIBLE) {
                     closeChannelDrawer();
@@ -1565,7 +1510,6 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (event.getAction() == KeyEvent.ACTION_UP) {
             int keyCode = event.getKeyCode();
-            // 全屏播放时，短按松开 OK 键：若信息页面(HUD)已显示则执行当前聚焦按钮功能，否则调出信息页面(HUD)
             if (drawerPanel.getVisibility() != View.VISIBLE
                     && remoteNumberBuffer.length() == 0
                     && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
@@ -1624,35 +1568,23 @@ public class MainActivity extends AppCompatActivity {
         mainHandler.postDelayed(commitNumberInputRunnable, NUMBER_INPUT_COMMIT_MS);
     }
 
+    // 修复特定菜单返回黑屏问题
     @Override
     protected void onResume() {
         super.onResume();
         if (videoView != null && !videoView.isPlaying()) {
             if (currentChannel != null && !TextUtils.isEmpty(currentChannel.getRawUrl())) {
-                int localProxyPort = -1;
-                if (getApplication() instanceof IptvApplication) {
-                    localProxyPort = ((IptvApplication) getApplication()).getLocalProxyPort();
-                }
-                String resolvedUrl;
-                if (settings.getStreamMode() == IptvSettings.STREAM_MODE_UDPXY
-                        && udpxyUnreachableInSession
-                        && localProxyPort > 0) {
-                    resolvedUrl = StreamUrlResolver.toUdpxyUrl(currentChannel.getRawUrl(), "127.0.0.1:" + localProxyPort);
-                } else {
-                    resolvedUrl = StreamUrlResolver.resolvePlaybackUrl(currentChannel, settings, localProxyPort);
-                }
-                videoView.setRawChannelUrl(currentChannel.getRawUrl());
-                videoView.setVideoPath(resolvedUrl);
-                videoView.start();
+                playChannel(currentChannel);
             }
         }
     }
 
+    // 修复特定菜单返回黑屏问题
     @Override
     protected void onPause() {
         super.onPause();
         if (videoView != null) {
-            videoView.pause();
+            videoView.stopPlayback();
         }
     }
 
