@@ -1,5 +1,8 @@
 package com.bjunicom.iptv.parser;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import com.bjunicom.iptv.model.IptvChannel;
 
 import java.io.BufferedReader;
@@ -7,6 +10,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.StringReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -596,5 +601,50 @@ public final class M3uParser {
 
     private static boolean isEmpty(CharSequence s) {
         return s == null || s.length() == 0;
+    }
+
+    // -------------------------------------------------------------
+    // 新增：远程拉取 M3U 的回调接口与异步请求方法
+    // -------------------------------------------------------------
+    public interface ParseCallback {
+        void onSuccess(List<IptvChannel> channels);
+        void onError(Exception e);
+    }
+
+    public static void parseFromHttp(final String m3uUrl, final ParseCallback callback) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    URL url = new URL(m3uUrl);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    conn.setRequestMethod("GET");
+
+                    if (conn.getResponseCode() == 200) {
+                        InputStream is = conn.getInputStream();
+                        final List<IptvChannel> channels = parse(is);
+                        is.close();
+
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override
+                            public void run() {
+                                callback.onSuccess(channels);
+                            }
+                        });
+                    } else {
+                        throw new Exception("HTTP状态码异常: " + conn.getResponseCode());
+                    }
+                } catch (final Exception e) {
+                    new Handler(Looper.getMainLooper()).post(new Runnable() {
+                        @Override
+                        public void run() {
+                            callback.onError(e);
+                        }
+                    });
+                }
+            }
+        }).start();
     }
 }
