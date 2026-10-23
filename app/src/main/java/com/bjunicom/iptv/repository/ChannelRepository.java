@@ -1,6 +1,7 @@
 package com.bjunicom.iptv.repository;
 
 import android.content.Context;
+import android.os.StrictMode;
 import android.text.TextUtils;
 
 import com.bjunicom.iptv.config.IptvSettings;
@@ -12,6 +13,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -26,7 +29,7 @@ import java.util.Set;
  * 负责管理：
  * 1. 内置北京联通 / 北京移动 / 北京电信 IPTV 频道列表
  *    - 北京联通: bj-unicom-iptv.m3u / bj-unicom-iptv-all.m3u
- *    - 北京移动: bj-mobile-iptv.m3u / bj-mobile-iptv-all.m3u
+ *    - 北京移动: 动态从 NAS 拉取 HTTP m3u 源
  *    - 北京电信: bj-telecom-iptv.m3u
  * 2. 动态扫描与 check_iptv_m3u.sh 生成的 modified_iptv*.m3u 合并及持久化
  * 3. 分组索引 ([高清]央视, [高清]卫视, [高清]北京, [高清]北京IPTV, [高清]NewTV, [高清]地方, [高清]购物, 4K, 少儿, 标清, 动态扫描发现, 收藏)
@@ -96,16 +99,20 @@ public class ChannelRepository {
         boolean includeAll = settings.isIncludeAllRepoChannels();
         List<IptvChannel> baseList = new ArrayList<>();
 
+        // 【修改核心】：拦截北京移动，改为从 NAS 远程拉取 m3u
         if (ispProvider == IptvSettings.ISP_BEIJING_MOBILE) {
-            String assetName = includeAll ? ASSET_MOBILE_ALL : ASSET_MOBILE_LATEST;
-            baseList.addAll(loadFromAssetsWithIsp(assetName, GROUP_ISP_MOBILE, false));
+            String nasUrl = "http://192.168.x.x/bj_mobile.m3u"; // TODO: 替换为你实际的 NAS 访问地址
+            baseList.addAll(loadFromHttpWithIsp(nasUrl, GROUP_ISP_MOBILE, false));
         } else if (ispProvider == IptvSettings.ISP_BEIJING_TELECOM) {
             baseList.addAll(loadFromAssetsWithIsp(ASSET_TELECOM_ALL, GROUP_ISP_TELECOM, false));
         } else if (ispProvider == IptvSettings.ISP_ALL_MERGED) {
             String unicomAsset = includeAll ? ASSET_UNICOM_ALL : ASSET_UNICOM_LATEST;
-            String mobileAsset = includeAll ? ASSET_MOBILE_ALL : ASSET_MOBILE_LATEST;
             baseList.addAll(loadFromAssetsWithIsp(unicomAsset, GROUP_ISP_UNICOM, true));
-            baseList.addAll(loadFromAssetsWithIsp(mobileAsset, GROUP_ISP_MOBILE, true));
+            
+            // 三网融合模式下，移动源也从 NAS 拉取
+            String nasUrl = "http://192.168.x.x/bj_mobile.m3u"; // TODO: 替换为你实际的 NAS 访问地址
+            baseList.addAll(loadFromHttpWithIsp(nasUrl, GROUP_ISP_MOBILE, true));
+            
             baseList.addAll(loadFromAssetsWithIsp(ASSET_TELECOM_ALL, GROUP_ISP_TELECOM, true));
             if (hasCustomUploadedM3u()) {
                 baseList.addAll(loadCustomUploadedWithIsp(true));
@@ -148,6 +155,48 @@ public class ChannelRepository {
         if (scannedFile.exists()) {
             mergeFromModifiedM3u(scannedFile);
         }
+    }
+
+    /**
+     * 【新增方法】：同步从 HTTP 服务器(如NAS)拉取 M3U 文件
+     */
+    private List<IptvChannel> loadFromHttpWithIsp(String urlStr, String ispName, boolean appendIspToDisplay) {
+        // 临时放开主线程网络限制，保证与原有的架构完美兼容，避免切台闪退
+        StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
+        StrictMode.setThreadPolicy(policy);
+
+        List<IptvChannel> list = new ArrayList<>();
+        try {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(3000);
+            conn.setReadTimeout(3000);
+            conn.setRequestMethod("GET");
+            if (conn.getResponseCode() == 200) {
+                try (InputStream is = conn.getInputStream()) {
+                    list = M3uParser.parse(is);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        for (IptvChannel ch : list) {
+            ch.setIspName(ispName);
+            List<String> groups = new ArrayList<>(ch.getGroups());
+            if (!groups.contains(ispName)) {
+                groups.add(ispName);
+                ch.setGroups(groups);
+            }
+            if (appendIspToDisplay && !TextUtils.isEmpty(ispName)) {
+                String shortTag = ispName.replace("北京", "");
+                String disp = ch.getDisplayName();
+                if (disp != null && !disp.contains("(" + shortTag + ")")) {
+                    ch.setDisplayName(disp + " (" + shortTag + ")");
+                }
+            }
+        }
+        return list;
     }
 
     private String getCustomScannedFileName() {
@@ -219,24 +268,15 @@ public class ChannelRepository {
         }
     }
 
-    /**
-     * 解析、校验并导入用户自定义上传的 M3U 内容
-     *
-     * @param m3uContent           M3U 文本内容
-     * @param fileName             文件名标识 (如 custom.m3u)
-     * @param switchToCustomSource true=切换为独立「自定义源」模式；false=合并到当前频道列表
-     * @return 解析与内容检测报告
-     */
     public synchronized M3uParser.M3uInspectionReport importCustomM3uContent(String m3uContent,
-                                                                              String fileName,
-                                                                              boolean switchToCustomSource) {
+                                                                             String fileName,
+                                                                             boolean switchToCustomSource) {
         String safeName = TextUtils.isEmpty(fileName) ? "custom.m3u" : fileName.trim();
         M3uParser.M3uInspectionReport report = M3uParser.inspectAndParse(m3uContent, safeName);
         if (!report.isValid()) {
             return report;
         }
 
-        // 持久化用户上传的原始 M3U 文件
         try {
             File customFile = getCustomUploadedM3uFile();
             try (FileOutputStream fos = new FileOutputStream(customFile)) {
@@ -306,9 +346,6 @@ public class ChannelRepository {
         }
     }
 
-    /**
-     * 合并 check_iptv_m3u.sh 或动态扫描输出的 modified_iptv.m3u
-     */
     public synchronized void mergeFromModifiedM3u(File m3uFile) {
         if (m3uFile == null || !m3uFile.exists()) {
             return;
@@ -320,9 +357,6 @@ public class ChannelRepository {
         }
     }
 
-    /**
-     * 合并扫描结果列表到当前频道仓库并持久化
-     */
     public synchronized void mergeScanResults(List<IptvChannel> scannedList, boolean persistToDisk) {
         if (scannedList == null || scannedList.isEmpty()) {
             return;
@@ -358,7 +392,6 @@ public class ChannelRepository {
                 }
                 existing.setResolutionMismatch(scanned.isResolutionMismatch());
             } else {
-                // 新扫描发现的组播地址
                 scanned.setIndex(allChannels.size() + 1);
                 scanned.setDiscoveredByScan(true);
                 if (scanned.getConnected() == null) {
@@ -459,7 +492,6 @@ public class ChannelRepository {
             categories.add(GROUP_HD_SHOPPING);
         }
 
-        // 动态添加自定义 M3U 中的自定义分组
         for (IptvChannel ch : allChannels) {
             for (String g : ch.getGroups()) {
                 if (TextUtils.isEmpty(g)
