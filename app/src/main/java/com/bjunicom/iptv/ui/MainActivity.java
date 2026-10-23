@@ -1627,18 +1627,23 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        AppUpdateManager.getInstance(this).attachActivity(this);
-        refreshChannelList();
-        mainHandler.post(telemetryTickRunnable);
-        if (currentChannel != null && !videoView.isPlaying()) {
-            videoView.start();
+        // 界面重新可见时，强制唤醒播放器并恢复Surface状态
+        if (mVideoView != null && !mVideoView.isPlaying()) {
+            // 注意：如果你的源码中记录当前播放地址的变量不叫 currentPlayUrl，请将此处替换为你实际的变量名
+            if (currentPlayUrl != null && !currentPlayUrl.isEmpty()) {
+                mVideoView.setVideoPath(currentPlayUrl);
+                mVideoView.start();
+            }
         }
     }
 
     @Override
     protected void onPause() {
-        mainHandler.removeCallbacks(telemetryTickRunnable);
         super.onPause();
+        // 界面不可见或弹出特定全屏菜单时，必须暂停并释放底层解码器，防止死锁导致返回时黑屏
+        if (mVideoView != null) {
+            mVideoView.pause();
+        }
     }
 
     @Override
