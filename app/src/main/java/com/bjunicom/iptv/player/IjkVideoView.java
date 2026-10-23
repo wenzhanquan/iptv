@@ -306,6 +306,25 @@ public class IjkVideoView extends FrameLayout {
                 ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "an", 0);
                 ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L);
                 ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1000000L);
+                
+                // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
+                
+                // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
+                // 画面落后音频时自动丢帧，保障直播实时性与流畅度
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
+                // 提升H264/H265解码效率（跳过环路滤波）
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
+                
+                // 降低起播缓冲时间阈值，实现频道秒开
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "packet-buffering", 0);
+
                 if (mSettings.getRenderViewType() == RENDER_TEXTURE_VIEW) {
                     mMediaPlayer = new TextureMediaPlayer(ijkPlayer);
                 } else {
@@ -344,6 +363,25 @@ public class IjkVideoView extends FrameLayout {
             mActiveCodecDescriptor = descriptor;
             mPooledIjkDecoder = CodecDecoderPool.getInstance().acquireIjkDecoder(descriptor, mSettings);
             IjkMediaPlayer ijkPlayer = mPooledIjkDecoder.player;
+            
+            // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
+            
+            // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
+            // 画面落后音频时自动丢帧，保障直播实时性与流畅度
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
+            // 提升H264/H265解码效率（跳过环路滤波）
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
+            
+            // 降低起播缓冲时间阈值，实现频道秒开
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 10240L);
+            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
 
             if (mSettings.getRenderViewType() == RENDER_TEXTURE_VIEW) {
                 mMediaPlayer = new TextureMediaPlayer(ijkPlayer);
@@ -419,6 +457,26 @@ public class IjkVideoView extends FrameLayout {
             case IptvSettings.PLAYER_IJK:
                 try {
                     IjkMediaPlayer ijkPlayer = new IjkMediaPlayer();
+                    
+                    // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
+                    
+                    // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
+                    // 画面落后音频时自动丢帧，保障直播实时性与流畅度
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
+                    // 提升H264/H265解码效率（跳过环路滤波）
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
+                    
+                    // 降低起播缓冲时间阈值，实现频道秒开
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 10240L);
+                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
+                    
                     CodecDecoderPool.configureIjkOptionsForCodec(
                             ijkPlayer, TsCodecDescriptor.createDefault(false), mSettings);
                     mediaPlayer = ijkPlayer;
