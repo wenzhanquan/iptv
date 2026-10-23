@@ -1627,12 +1627,23 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 界面重新可见时，强制唤醒播放器并恢复Surface状态
-        if (mVideoView != null && !mVideoView.isPlaying()) {
-            // 注意：如果你的源码中记录当前播放地址的变量不叫 currentPlayUrl，请将此处替换为你实际的变量名
-            if (currentPlayUrl != null && !currentPlayUrl.isEmpty()) {
-                mVideoView.setVideoPath(currentPlayUrl);
-                mVideoView.start();
+        if (videoView != null && !videoView.isPlaying()) {
+            if (currentChannel != null && !TextUtils.isEmpty(currentChannel.getRawUrl())) {
+                int localProxyPort = -1;
+                if (getApplication() instanceof IptvApplication) {
+                    localProxyPort = ((IptvApplication) getApplication()).getLocalProxyPort();
+                }
+                String resolvedUrl;
+                if (settings.getStreamMode() == IptvSettings.STREAM_MODE_UDPXY
+                        && udpxyUnreachableInSession
+                        && localProxyPort > 0) {
+                    resolvedUrl = StreamUrlResolver.toUdpxyUrl(currentChannel.getRawUrl(), "127.0.0.1:" + localProxyPort);
+                } else {
+                    resolvedUrl = StreamUrlResolver.resolvePlaybackUrl(currentChannel, settings, localProxyPort);
+                }
+                videoView.setRawChannelUrl(currentChannel.getRawUrl());
+                videoView.setVideoPath(resolvedUrl);
+                videoView.start();
             }
         }
     }
@@ -1640,9 +1651,8 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        // 界面不可见或弹出特定全屏菜单时，必须暂停并释放底层解码器，防止死锁导致返回时黑屏
-        if (mVideoView != null) {
-            mVideoView.pause();
+        if (videoView != null) {
+            videoView.pause();
         }
     }
 
