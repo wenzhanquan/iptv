@@ -32,18 +32,6 @@ import tv.danmaku.ijk.media.player.misc.IMediaFormat;
 import tv.danmaku.ijk.media.player.misc.ITrackInfo;
 import tv.danmaku.ijk.media.player.misc.IjkMediaFormat;
 
-/**
- * 基于 bilibili/ijkplayer 深度定制的北京联通 IPTV 播放器核心视图
- *
- * 架构特性（下载与解码分离 + 双缓冲池化 + 消除切台慢放）：
- * 1. 下载模块池化 (StreamDownloaderPool)：
- *    切台时从池中获取预分配环形缓冲区的 PooledStreamDownloader，独立连接 HTTP-TS 或 IGMP 组播流，
- *    实时解复用 PAT/PMT 提取视频与音频编码格式 (TsCodecDescriptor)，并丢弃首个 IDR 关键帧之前的
- *    残留 P/B 帧与超前音频包，实现「PAT+PMT+IDR关键帧+同PTS音频」精准起播对齐，彻底解决切台前几秒 0.5x 慢放问题。
- * 2. 解码器模块池化 (CodecDecoderPool)：
- *    根据下载模块 parse 出来的 TsCodecDescriptor (如 H264+MP2、HEVC+EAC3)，从 CodecDecoderPool 按编码规格
- *    匹配复用或创建对应的 IjkMediaPlayer 与硬件音频 MediaCodec，切台时异步 reset 归还池中，避免每次销毁重建。
- */
 public class IjkVideoView extends FrameLayout {
     private static final String TAG = "IjkVideoView";
 
@@ -71,7 +59,6 @@ public class IjkVideoView extends FrameLayout {
     private Map<String, String> mHeaders;
     private final TsHardwareAudioCompanion mHwAudioCompanion = new TsHardwareAudioCompanion();
 
-    // 下载模块与解码模块的池化句柄
     private final AtomicLong mPlaybackSessionToken = new AtomicLong(0);
     private StreamDownloaderPool.PooledStreamDownloader mActiveDownloader = null;
     private CodecDecoderPool.PooledIjkDecoder mPooledIjkDecoder = null;
@@ -126,8 +113,6 @@ public class IjkVideoView extends FrameLayout {
         mCurrentAspectRatio = mSettings.getAspectRatio();
 
         setRender(mSettings.getRenderViewType());
-
-        // 预热常用 Codec 规格的解码器池
         CodecDecoderPool.getInstance().prewarmCommonDecoders(mSettings);
 
         mVideoWidth = 0;
@@ -230,12 +215,23 @@ public class IjkVideoView extends FrameLayout {
         release(true);
     }
 
-    /**
-     * 核心切台流程（下载模块与解码模块解耦）：
-     * 1. 先从 StreamDownloaderPool 获取池化下载器启动新频道下载，实时解析 PAT/PMT 获取 TsCodecDescriptor 并对齐首个 IDR 关键帧；
-     * 2. 下载器回调 onCodecParsed(descriptor) 后，根据解析出的编码规格从 CodecDecoderPool 获取（或创建）匹配的解码器；
-     * 3. 通过 IMediaDataSource 零拷贝环形缓冲区将已对齐关键帧的 TS 流喂给池化解码器，避免每次重建解码器并彻底消除切台慢放。
-     */
+    private void applyHardcodeOptions(IjkMediaPlayer ijkPlayer) {
+        // 核心优化：强制开启MediaCodec硬件解码
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
+        
+        // 核心优化：针对电视卡顿丢帧、秒开处理
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 10240L);
+        ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
+    }
+
     private void openVideo() {
         if (mUri == null || mSurfaceHolder == null) {
             return;
@@ -303,27 +299,8 @@ public class IjkVideoView extends FrameLayout {
                 mActiveCodecDescriptor = hlsDesc;
                 mPooledIjkDecoder = CodecDecoderPool.getInstance().acquireIjkDecoder(hlsDesc, mSettings);
                 IjkMediaPlayer ijkPlayer = mPooledIjkDecoder.player;
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "an", 0);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1000000L);
                 
-                // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
-                
-                // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
-                // 画面落后音频时自动丢帧，保障直播实时性与流畅度
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
-                // 提升H264/H265解码效率（跳过环路滤波）
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
-                
-                // 降低起播缓冲时间阈值，实现频道秒开
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
-                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "packet-buffering", 0);
+                applyHardcodeOptions(ijkPlayer);
 
                 if (mSettings.getRenderViewType() == RENDER_TEXTURE_VIEW) {
                     mMediaPlayer = new TextureMediaPlayer(ijkPlayer);
@@ -331,7 +308,6 @@ public class IjkVideoView extends FrameLayout {
                     mMediaPlayer = ijkPlayer;
                 }
             } else {
-                // 非 IJK 模式 (ExoPlayer / AndroidMediaPlayer) 走常规播放器路径
                 mMediaPlayer = createFallbackPlayer(mSettings.getPlayerType());
             }
             attachPlayerListeners(mMediaPlayer);
@@ -348,10 +324,6 @@ public class IjkVideoView extends FrameLayout {
         }
     }
 
-    /**
-     * 当下载模块完成 MPEG-TS 的 PAT/PMT Codec 解析与首个关键帧对齐后，
-     * 根据 TsCodecDescriptor 从 CodecDecoderPool 中选择（或创建）对应规格的解码器并绑定数据源。
-     */
     private void attachPooledDecoderForParsedStream(
             long sessionToken,
             TsCodecDescriptor descriptor,
@@ -364,24 +336,7 @@ public class IjkVideoView extends FrameLayout {
             mPooledIjkDecoder = CodecDecoderPool.getInstance().acquireIjkDecoder(descriptor, mSettings);
             IjkMediaPlayer ijkPlayer = mPooledIjkDecoder.player;
             
-            // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
-            
-            // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
-            // 画面落后音频时自动丢帧，保障直播实时性与流畅度
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
-            // 提升H264/H265解码效率（跳过环路滤波）
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
-            
-            // 降低起播缓冲时间阈值，实现频道秒开
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 10240L);
-            ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
+            applyHardcodeOptions(ijkPlayer);
 
             if (mSettings.getRenderViewType() == RENDER_TEXTURE_VIEW) {
                 mMediaPlayer = new TextureMediaPlayer(ijkPlayer);
@@ -390,7 +345,6 @@ public class IjkVideoView extends FrameLayout {
             }
 
             attachPlayerListeners(mMediaPlayer);
-            // 将池化下载器作为 IMediaDataSource 直接绑定给池化解码器
             ijkPlayer.setDataSource(downloader);
             bindSurfaceHolder(mMediaPlayer, mSurfaceHolder);
             mMediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
@@ -414,8 +368,6 @@ public class IjkVideoView extends FrameLayout {
         }
         String scheme = sourceUri.getScheme();
         if (scheme != null && (scheme.equalsIgnoreCase("rtp") || scheme.equalsIgnoreCase("udp"))) {
-            // StreamDownloaderPool 内置了直连 IGMP 组播 Socket 的能力，可直接处理 rtp:// / udp://；
-            // 若用户切换到 ExoPlayer / AndroidMediaPlayer，则通过 LocalMulticastProxyServer 转换。
             if (mSettings.getPlayerType() != IptvSettings.PLAYER_IJK && mAppContext instanceof IptvApplication) {
                 int proxyPort = ((IptvApplication) mAppContext).getLocalProxyPort();
                 if (proxyPort > 0) {
@@ -457,26 +409,7 @@ public class IjkVideoView extends FrameLayout {
             case IptvSettings.PLAYER_IJK:
                 try {
                     IjkMediaPlayer ijkPlayer = new IjkMediaPlayer();
-                    
-                    // --- 强制开启 MediaCodec 硬件解码，大幅降低电视CPU占用，解决高清流卡顿 ---
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1);
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1);
-                    
-                    // --- IPTV组播/单播直播流防卡顿与缓冲优化核心配置 ---
-                    // 画面落后音频时自动丢帧，保障直播实时性与流畅度
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1); 
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
-                    // 提升H264/H265解码效率（跳过环路滤波）
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48); 
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1);
-                    
-                    // 降低起播缓冲时间阈值，实现频道秒开
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzemaxduration", 100L);
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 10240L);
-                    ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 0);
-                    
+                    applyHardcodeOptions(ijkPlayer);
                     CodecDecoderPool.configureIjkOptionsForCodec(
                             ijkPlayer, TsCodecDescriptor.createDefault(false), mSettings);
                     mediaPlayer = ijkPlayer;
@@ -507,11 +440,6 @@ public class IjkVideoView extends FrameLayout {
         holder.bindToMediaPlayer(mp);
     }
 
-    /**
-     * 释放或回收当前播放会话：
-     * - 下载模块对象归还至 StreamDownloaderPool；
-     * - 解码模块对象归还至 CodecDecoderPool（后台异步 reset 复用，不销毁重建）。
-     */
     public void release(boolean cleartargetstate) {
         mPlaybackSessionToken.incrementAndGet();
         mHwAudioCompanion.stop();
@@ -634,10 +562,6 @@ public class IjkVideoView extends FrameLayout {
         return mPrepareEndTime > mPrepareStartTime ? (mPrepareEndTime - mPrepareStartTime) : 0;
     }
 
-    /**
-     * 获取实时网络下载速度 (Bytes/sec)
-     * 优先从分离的池化下载模块获取精确实时速率（同时支持 IGMP 组播与 HTTP-TS）
-     */
     public long getTcpSpeed() {
         if (mActiveDownloader != null) {
             long dlSpeed = mActiveDownloader.getDownloadSpeedBytesPerSec();
@@ -658,9 +582,6 @@ public class IjkVideoView extends FrameLayout {
         return 0;
     }
 
-    /**
-     * 获取实时渲染帧率
-     */
     public float getVideoOutputFramesPerSecond() {
         if (!isInPlaybackState()) {
             return 0f;
@@ -675,9 +596,6 @@ public class IjkVideoView extends FrameLayout {
         return 0f;
     }
 
-    /**
-     * 获取当前解码器名称与池化状态
-     */
     public String getDecoderName() {
         int playerType = mSettings.getPlayerType();
         if (playerType == IptvSettings.PLAYER_ANDROID_MEDIA) {
@@ -721,9 +639,6 @@ public class IjkVideoView extends FrameLayout {
         return videoDecoder;
     }
 
-    /**
-     * 提取符合 check_iptv_m3u.sh 格式的视频轨道描述，如 "#1 h264, 1920x1080,25fps"
-     */
     public String getFormattedVideoTrackInfo() {
         if (!isInPlaybackState()) {
             return "";
@@ -775,9 +690,6 @@ public class IjkVideoView extends FrameLayout {
         return "";
     }
 
-    /**
-     * 提取符合 check_iptv_m3u.sh 格式的音频轨道描述，如 "#1 mp2,2ch,48khz"
-     */
     public String getFormattedAudioTrackInfo() {
         if (!isInPlaybackState()) {
             return "";
@@ -830,9 +742,6 @@ public class IjkVideoView extends FrameLayout {
         return String.format(Locale.US, "#1 %s,2ch,%dkhz", codec, sampleRate / 1000);
     }
 
-    /**
-     * 按照 check_iptv_m3u.sh 规则判定当前视频流分辨率标记 ("高清", "4K", "标清", "其它")
-     */
     public String getDetectedResolutionFlag() {
         if (mVideoWidth == 1920 && mVideoHeight == 1080) {
             return "高清";
@@ -886,7 +795,6 @@ public class IjkVideoView extends FrameLayout {
                                     start();
                                 }
                             } else if (mTargetState == STATE_PLAYING && isInPlaybackState() && !isPlaying()) {
-                                // AndroidMediaPlayer 播放 MPEG-TS 时若 Surface 尺寸已就绪，兜底立即启动播放，防止因等待 resize 导致卡在 PREPARED 黑屏
                                 start();
                             }
                         }
@@ -934,12 +842,6 @@ public class IjkVideoView extends FrameLayout {
         }
     };
 
-    /**
-     * 检查音频轨道是否需要挂载池化硬件伴音解码器：
-     * - MP2 / MP3 / AAC / FLAC 音频由补丁后的 libijkffmpeg.so 直接原生解码输出；
-     * - 若遇 AC-3 / E-AC-3 (杜比 4K 频道) 等格式，直接通过当前 PooledStreamDownloader 的旁路缓冲流
-     *   驱动池化的 Android TV MediaCodec 硬件音频解码器，无需建立第二条网络连接。
-     */
     private void checkAndStartHwAudioIfNeeded() {
         try {
             TsCodecDescriptor desc = mActiveCodecDescriptor;
